@@ -28,37 +28,39 @@
 
 QueueHandle_t queue;
 bool txbit;
-bool recvd;
 int tx_buffer[TXLEN] = { 0 };
 int tx_counter = 0;
 bool txflag = 0;
 
 bool enableflag = 0;
 
+void delay_ms(int ms) {
+
+    while (ms) {
+        __delay_cycles(CYCLES_PER_MS);
+        ms--;
+    }
+}
+
+void ccrhigh(){
+    TA0CCR0 = (CPU_FREQ/400000) -2 ;
+}
+
+void ccrlow(){
+    __enable_interrupt();       // Enable global interrupts
+    TA0CCR0 = (CPU_FREQ/200000) -2 ;
+    TA0CCTL0 = CCIE;
+    TA0CTL = TASSEL_2 | TACLR | MC_1;
+}
+
 #pragma vector=TIMER0_A0_VECTOR
 __interrupt void timer_a_bitbuf() {
-    puts("Hello, world14\n");
-    xQueueReceive(queue, &recvd, pdMS_TO_TICKS(10));
-    if(tx_counter < TXLEN){
-        if (recvd == 1){
-            puts("Hello, world12\n");
-            TA0CCR0 = (CPU_FREQ/400000) -2 ;
-            P1OUT ^= BIT2;  // Toggle P1.6 to generate PWM signal
-        }
-        else if(recvd == 0){
-            puts("Hello, world13\n");
-            TA0CCR0 = (CPU_FREQ/200000) -2 ;
-            P1OUT ^= BIT2;  // Toggle P1.6 to generate PWM signal
-        }
 
-        tx_counter++;
-    }
-    else{
-         txflag = 1;
-         tx_counter = 0;
-         TA0CCR0 = (CPU_FREQ/100000) -2 ;
-         xQueueReset(queue);
-    }
+//    uint8_t recvd;
+//    xQueueReceiveFromISR(queue, &recvd, NULL); //introduces delay in the ISR trigger
+
+//    TA0CCR0 = (CPU_FREQ/2000000) -1 ;
+    P1OUT ^= BIT2;  // Toggle P1.2 to generate PWM signal
 
 }
 
@@ -91,27 +93,17 @@ void uint32_to_binary(uint32_t num) {
     // Iterate through each bit
     int i = 0;
     for (i = 0; i < 32; i++) {
-        // Check if the bit is set or not
-        txbit = num & mask;
+        txbit = num & mask;             // Check if the bit is set or not
         xQueueSend(queue, &txbit, 0);
-        // Shift the mask to the right for the next bit
-        mask >>= 1;
-    }
-}
-
-void delay_ms(int ms) {
-
-    while (ms) {
-        __delay_cycles(CYCLES_PER_MS);
-        ms--;
+        mask >>= 1;                     // Shift the mask to the right for the next bit
     }
 }
 
 int main_blinky(void) {
     WDTCTL = WDTPW | WDTHOLD;   // Stop watchdog timer
 
+    queue = xQueueCreate(TXLEN, ITEM_SIZE);
 
-//    LogInfo("hello");
     // Configure GPIO
     P1OUT &= ~BIT2;                 // Clear P1.0 output latch for a defined power-on state
 
@@ -122,9 +114,6 @@ int main_blinky(void) {
 
     set_cpu_freq();
 
-    queue = xQueueCreate(TXLEN, ITEM_SIZE);
-
-
     static uint8_t message[buffer_size(PAYLOADSIZE+2, HEADER_LEN)*4] = {0};  // include 10 header bytes
     static uint32_t buffer[buffer_size(PAYLOADSIZE, HEADER_LEN)] = {0}; // initialize the buffer
     static uint8_t seq = 0;
@@ -132,83 +121,59 @@ int main_blinky(void) {
     uint8_t tx_payload_buffer[PAYLOADSIZE];
 
 
-
     while (1) {
         txflag = 0;
-//        puts("Hello, world1\n");
+//        enableflag = 0;
         /* generate new data */
         generate_data(tx_payload_buffer, PAYLOADSIZE, true);
-//        puts("Hello, world2\n");
         /* add header (10 byte) to packet */
         add_header(&message[0], seq, header_tmplate);
-//        puts("Hello, world4\n");
         /* add payload to packet */
         memcpy(&message[HEADER_LEN], tx_payload_buffer, PAYLOADSIZE);
-//        puts("Hello, world5\n");
         xQueueReset(queue);
-        puts("Hello, world6\n");
-        // printf("Packet start \n");
+
         /* casting for 32-bit fifo */
         uint8_t i=0;
         for (i=0; i < buffer_size(PAYLOADSIZE, HEADER_LEN); i++) {
-            puts("Hello, world7\n");
             buffer[i] = ((uint32_t) message[4*i+3]) | (((uint32_t) message[4*i+2]) << 8) | (((uint32_t) message[4*i+1]) << 16) | (((uint32_t)message[4*i]) << 24);
-            // printf("%x \n",buffer[i]);
             uint32_to_binary(buffer[i]);
         }
-        puts("Hello, world8\n");
-        // printf("Packet end \n");
 
-        /* put the data to FIFO */
-        // ESP_LOGI("debug", "counter %d\n", counter);
-        // for (int i = 0; i<TXLEN; i++){
-        //     printf("%x", tx_buffer[i]);
-        // }
-        // printf("\n");
         seq++;
         tx_counter = 0;
-        // xTaskCreate(&timer, "task", 8192,(void *)queue, 1, &task_handle_1);
+
+
 
         while(txflag == 0){
-            puts("Hello, world9\n");
-            if (enableflag == 0){
-                puts("Hello, world10\n");
+
+            // 2*Frequency of PWM Signal  = Timer Clock Frequency / TACCR0 Value
+            if(enableflag == 0){
+
                 __enable_interrupt();       // Enable global interrupts
+                TA0CCR0 = (CPU_FREQ/50000) -2 ;
                 TA0CCTL0 = CCIE;
                 TA0CTL = TASSEL_2 | TACLR | MC_1;
-                enableflag = 1;
+                enableflag =1;
             }
-            if(txflag == 1){
-                puts("txdone");
-                break;
-            }
-        }
-//        while (tx_counter < TXLEN)
-//        {
-//            puts("Hello, world9\n");
-//            __enable_interrupt();       // Enable global interrupts
-//            TA0CCTL0 = CCIE;
-//            TA0CTL = TASSEL_2 | TACLR | MC_1;
-//
-////            tx_counter++;
-//        }
-//        if (tx_counter == TXLEN)
-//        {
-//            tx_counter = 0;
-//            xQueueReset(queue);
-            // esp_timer_stop(timer_handler);
-            // esp_timer_delete(timer_handler);
-//            puts("tx completed\n");
+
+//            delay_ms(5000);
 //            TA0CTL &= ~(TASSEL_2 | TACLR | MC_1);  // Stop the timer
 //            TA0CCTL0 &= ~CCIE; // Disable interrupts
 //            __disable_interrupt();
+//
+//            delay_ms(5000);
+//            __enable_interrupt();       // Enable global interrupts
+//            TA0CCTL0 = CCIE;
+//            TA0CTL = TASSEL_2 | TACLR | MC_1;
+//            delay_ms(5000);
 
-            // gpio_set_level(GPIO_NUM_2, 0);
-//        }
+////                puts("hello");
+//                __enable_interrupt();       // Enable global interrupts
+//                TA0CCR0 = (CPU_FREQ/200000) -2 ;
+//                TA0CCTL0 = CCIE;
+//                TA0CTL = TASSEL_2 | TACLR | MC_1;
 
-        // vTaskDelay(TX_DURATION/portTICK_PERIOD_MS);
-        // delay_ms(TX_DURATION);
-//        vTaskDelete(task_handle_1);
+        }
     }
 
     while(1);
