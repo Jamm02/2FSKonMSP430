@@ -27,11 +27,12 @@
 #define TXLEN                   (buffer_size(PAYLOADSIZE, HEADER_LEN) * 8 * 4)
 
 QueueHandle_t queue;
+TaskHandle_t task_handle_1;
 bool txbit;
 int tx_buffer[TXLEN] = { 0 };
 int tx_counter = 0;
 bool txflag = 0;
-
+bool recvd;
 bool enableflag = 0;
 
 void delay_ms(int ms) {
@@ -42,26 +43,96 @@ void delay_ms(int ms) {
     }
 }
 
-void ccrhigh(){
-    TA0CCR0 = (CPU_FREQ/400000) -2 ;
+#pragma vector=TIMER1_A0_VECTOR
+__interrupt void Timer1_A0 (void)
+{
+  P1OUT ^= BIT3;                        // Toggle P1.0
+//  TA1CCR0 += 50000;                          // Add Offset to TACCR0
 }
 
-void ccrlow(){
-    __enable_interrupt();       // Enable global interrupts
-    TA0CCR0 = (CPU_FREQ/200000) -2 ;
-    TA0CCTL0 = CCIE;
-    TA0CTL = TASSEL_2 | TACLR | MC_1;
+
+void freqhigh(){
+    __enable_interrupt();
+    TA1CTL = TASSEL_2 | TACLR | MC_1 ;  // SMCLK, up mode, /8 divider
+    TA1CCR0 = (CPU_FREQ/800000) -2;                      // Set compare value for 200 kHz
+    TA1CCTL0 = CCIE;                  // Enable CCR0 interrupt
 }
 
-#pragma vector=TIMER0_A0_VECTOR
-__interrupt void timer_a_bitbuf() {
+void freqlow(){
+    __enable_interrupt();
+    TA1CTL = TASSEL_2 | TACLR | MC_1 ;  // SMCLK, up mode, /8 divider
+    TA1CCR0 = (CPU_FREQ/400000) -2;                      // Set compare value for 200 kHz
+    TA1CCTL0 = CCIE;                  // Enable CCR0 interrupt
+}
 
-//    uint8_t recvd;
-//    xQueueReceiveFromISR(queue, &recvd, NULL); //introduces delay in the ISR trigger
+void disable_signal(){
+    P1OUT = 0; // Set all P1 pins low
+    __disable_interrupt();
+    TA1CTL &= ~(TASSEL_2 | TACLR | MC_1);
+    TA1CCTL0 = ~CCIE;
+}
+void msp430_timer_stop(void) {
+    P1OUT = 0; // Set all P1 pins low
+    // Disable interrupts temporarily for safe access
+    __disable_interrupt();
 
-//    TA0CCR0 = (CPU_FREQ/2000000) -1 ;
-    P1OUT ^= BIT2;  // Toggle P1.2 to generate PWM signal
+    // Clear callback function pointer to prevent further calls
+    static void (*callback_function)(void) = NULL;
 
+    // Stop timer hardware
+    TA0CTL &= ~MC_1;  // Halt timer operation
+
+    // Clear interrupt flag to prevent unexpected interrupts
+    TA0CCTL0 &= ~CCIFG;
+
+    // Enable interrupts again
+    __enable_interrupt();
+}
+
+void callback_function(void) {
+    // Perform desired actions here, e.g., toggle an LED, read a sensor, etc.
+    if (tx_counter < TXLEN){
+        xQueueReceiveFromISR(queue,&recvd, NULL);
+        if (recvd == 1){
+            freqhigh();
+//            P1OUT ^= BIT2;  // Toggle an LED as an example
+        }
+        else{
+            freqlow();
+//            P1OUT ^= BIT2;  // Toggle an LED as an example
+        }
+        tx_counter++;
+    }
+    else{
+        disable_signal();
+        tx_counter = 0;
+        xQueueReset(queue);
+        msp430_timer_stop();
+    }
+}
+
+void msp430_timer_start_periodic(unsigned int period_us, void (*callback)(void)) {
+    // Configure Timer_A0 for periodic operation (adjust as needed)
+    TA0CTL = TASSEL_2 | MC_1 | ID_0;  // SMCLK, Up mode, no divider
+    TA0CCR0 = (CPU_FREQ * period_us) / 1000000 - 1;  // Set period based on SMCLK frequency
+    TA0CCTL0 = CCIE;  // Enable interrupts
+    TA0CTL |= MC_1;   // Start timer
+
+    // Store callback function pointer safely
+    __disable_interrupt();  // Disable interrupts temporarily
+    static void (*callback_function)(void) = NULL;
+    callback_function = callback;
+    __enable_interrupt();  // Re-enable interrupts
+}
+
+// Interrupt service routine for Timer_A0 (adjust for other timers)
+__attribute__((interrupt(TIMER0_A0_VECTOR)))
+void timer_a0_isr(void) {
+    if (callback_function) {
+        __disable_interrupt();  // Ensure exclusive access to callback
+        callback_function();    // Call user-defined callback
+        __enable_interrupt();  // Restore interrupts
+    }
 }
 
 void set_cpu_freq() {
@@ -87,17 +158,31 @@ void set_cpu_freq() {
 
 void uint32_to_binary(uint32_t num) {
 
-    // Start from the leftmost bit (31st bit)
-    uint32_t mask = 1 << 31;
 
-    // Iterate through each bit
+    // Start from the leftmost bit (31st bit)
+    uint32_t mask = 1 << 15;
+    uint16_t MSB = num >> 16;
+    uint16_t LSB = num & 0xFFFF;
+
     int i = 0;
-    for (i = 0; i < 32; i++) {
-        txbit = num & mask;             // Check if the bit is set or not
+    for (i = 0; i < 16; i++) {
+        txbit = MSB & mask;             // Check if the bit is set or not
         xQueueSend(queue, &txbit, 0);
         mask >>= 1;                     // Shift the mask to the right for the next bit
     }
+    mask = 1<<15;
+    for (i = 0; i < 16; i++) {
+        txbit = LSB & mask;
+        xQueueSend(queue, &txbit, 0);
+        mask >>= 1;                     // Shift the mask to the right for the next bit
+    }
+
 }
+
+//void timer(void* param){
+//     msp430_timer_start_periodic(20, callback_function);
+//     while (1);
+//}
 
 int main_blinky(void) {
     WDTCTL = WDTPW | WDTHOLD;   // Stop watchdog timer
@@ -106,24 +191,22 @@ int main_blinky(void) {
 
     // Configure GPIO
     P1OUT &= ~BIT2;                 // Clear P1.0 output latch for a defined power-on state
-
+    P1OUT &= ~BIT3;
     P1DIR |= BIT2;                  // Set P1.0 to output direction
+    P1DIR |= BIT3;
 
     PM5CTL0 &= ~LOCKLPM5;           // Disable the GPIO power-on default high-impedance mode
                                     // to activate previously configured port settings
 
     set_cpu_freq();
-
     static uint8_t message[buffer_size(PAYLOADSIZE+2, HEADER_LEN)*4] = {0};  // include 10 header bytes
     static uint32_t buffer[buffer_size(PAYLOADSIZE, HEADER_LEN)] = {0}; // initialize the buffer
     static uint8_t seq = 0;
     uint8_t *header_tmplate = packet_hdr_template(RECEIVER);
     uint8_t tx_payload_buffer[PAYLOADSIZE];
 
-
     while (1) {
         txflag = 0;
-//        enableflag = 0;
         /* generate new data */
         generate_data(tx_payload_buffer, PAYLOADSIZE, true);
         /* add header (10 byte) to packet */
@@ -141,42 +224,11 @@ int main_blinky(void) {
 
         seq++;
         tx_counter = 0;
+        msp430_timer_start_periodic(150, callback_function);
+        delay_ms(400);
 
-
-
-        while(txflag == 0){
-
-            // 2*Frequency of PWM Signal  = Timer Clock Frequency / TACCR0 Value
-            if(enableflag == 0){
-
-                __enable_interrupt();       // Enable global interrupts
-                TA0CCR0 = (CPU_FREQ/50000) -2 ;
-                TA0CCTL0 = CCIE;
-                TA0CTL = TASSEL_2 | TACLR | MC_1;
-                enableflag =1;
-            }
-
-//            delay_ms(5000);
-//            TA0CTL &= ~(TASSEL_2 | TACLR | MC_1);  // Stop the timer
-//            TA0CCTL0 &= ~CCIE; // Disable interrupts
-//            __disable_interrupt();
-//
-//            delay_ms(5000);
-//            __enable_interrupt();       // Enable global interrupts
-//            TA0CCTL0 = CCIE;
-//            TA0CTL = TASSEL_2 | TACLR | MC_1;
-//            delay_ms(5000);
-
-////                puts("hello");
-//                __enable_interrupt();       // Enable global interrupts
-//                TA0CCR0 = (CPU_FREQ/200000) -2 ;
-//                TA0CCTL0 = CCIE;
-//                TA0CTL = TASSEL_2 | TACLR | MC_1;
-
-        }
     }
 
     while(1);
     return 0;
 }
-
