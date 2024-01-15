@@ -8,9 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "packet_gen.h"
 /* Standard demo includes. */
 #include "partest.h"
+#include "stdarg.h"
 
 /* Priorities at which the tasks are created. */
 #define BLINK_TASK_PRIORITY     ( tskIDLE_PRIORITY + 2 )
@@ -46,23 +46,19 @@ void delay_ms(int ms) {
 #pragma vector=TIMER1_A0_VECTOR
 __interrupt void Timer1_A0 (void)
 {
-  P1OUT ^= BIT3;                        // Toggle P1.0
+//  P1OUT ^= BIT3; // Toggle P1.0
+    P1OUT ^= BIT2;
+
 //  TA1CCR0 += 50000;                          // Add Offset to TACCR0
 }
 
 
 void freqhigh(){
-    __enable_interrupt();
-    TA1CTL = TASSEL_2 | TACLR | MC_1 ;  // SMCLK, up mode, /8 divider
-    TA1CCR0 = (CPU_FREQ/800000) -2;                      // Set compare value for 200 kHz
-    TA1CCTL0 = CCIE;                  // Enable CCR0 interrupt
+    TA1CCR0 = (CPU_FREQ/(2*240000)) -1;                      // Set compare value for 200 kHz
 }
 
 void freqlow(){
-    __enable_interrupt();
-    TA1CTL = TASSEL_2 | TACLR | MC_1 ;  // SMCLK, up mode, /8 divider
-    TA1CCR0 = (CPU_FREQ/400000) -2;                      // Set compare value for 200 kHz
-    TA1CCTL0 = CCIE;                  // Enable CCR0 interrupt
+    TA1CCR0 = (CPU_FREQ/(2*200000)) -1;                      // Set compare value for 200 kHz
 }
 
 void disable_signal(){
@@ -90,15 +86,18 @@ void msp430_timer_stop(void) {
 }
 
 void callback_function(void) {
+//    P1OUT ^= BIT2;
     // Perform desired actions here, e.g., toggle an LED, read a sensor, etc.
     if (tx_counter < TXLEN){
         xQueueReceiveFromISR(queue,&recvd, NULL);
+
+//        printf("%d",recvd);
         if (recvd == 1){
-            freqhigh();
+            TA1CCR0 = (CPU_FREQ/(2*240000)) -1;
 //            P1OUT ^= BIT2;  // Toggle an LED as an example
         }
         else{
-            freqlow();
+            TA1CCR0 = (CPU_FREQ/(2*200000)) -1;
 //            P1OUT ^= BIT2;  // Toggle an LED as an example
         }
         tx_counter++;
@@ -113,10 +112,13 @@ void callback_function(void) {
 
 void msp430_timer_start_periodic(unsigned int period_us, void (*callback)(void)) {
     // Configure Timer_A0 for periodic operation (adjust as needed)
-    TA0CTL = TASSEL_2 | MC_1 | ID_0;  // SMCLK, Up mode, no divider
+    TA0CTL = TASSEL_2 | MC_1 | ID_0| TACLR;  // SMCLK, Up mode, no divider
     TA0CCR0 = (CPU_FREQ * period_us) / 1000000 - 1;  // Set period based on SMCLK frequency
     TA0CCTL0 = CCIE;  // Enable interrupts
-    TA0CTL |= MC_1;   // Start timer
+//    TA0CTL |= MC_1;   // Start timer
+
+    TA1CTL = TASSEL_2 | TACLR | MC_1 ;  // SMCLK, up mode, /8 divider
+    TA1CCTL0 = CCIE;                  // Enable CCR0 interrupt
 
     // Store callback function pointer safely
     __disable_interrupt();  // Disable interrupts temporarily
@@ -160,7 +162,7 @@ void uint32_to_binary(uint32_t num) {
 
 
     // Start from the leftmost bit (31st bit)
-    uint32_t mask = 1 << 15;
+    uint32_t mask = 1u << 15;
     uint16_t MSB = num >> 16;
     uint16_t LSB = num & 0xFFFF;
 
@@ -170,7 +172,7 @@ void uint32_to_binary(uint32_t num) {
         xQueueSend(queue, &txbit, 0);
         mask >>= 1;                     // Shift the mask to the right for the next bit
     }
-    mask = 1<<15;
+    mask = 1u<<15;
     for (i = 0; i < 16; i++) {
         txbit = LSB & mask;
         xQueueSend(queue, &txbit, 0);
@@ -224,8 +226,8 @@ int main_blinky(void) {
 
         seq++;
         tx_counter = 0;
-        msp430_timer_start_periodic(150, callback_function);
-        delay_ms(400);
+        msp430_timer_start_periodic(100, callback_function);
+        delay_ms(50);
 
     }
 
