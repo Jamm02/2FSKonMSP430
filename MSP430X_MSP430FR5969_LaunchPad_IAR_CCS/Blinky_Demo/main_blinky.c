@@ -1,13 +1,12 @@
 /* Kernel includes. */
 #include "FreeRTOS.h"
-#include "task.h"
-#include "semphr.h"
 #include <msp430fr5969.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "packet_gen.h"
 /* Standard demo includes. */
 #include "partest.h"
 #include "stdarg.h"
@@ -26,14 +25,73 @@
 #define ITEM_SIZE sizeof(int)
 #define TXLEN                   (buffer_size(PAYLOADSIZE, HEADER_LEN) * 8 * 4)
 
-QueueHandle_t queue;
-TaskHandle_t task_handle_1;
 bool txbit;
 int tx_buffer[TXLEN] = { 0 };
 int tx_counter = 0;
-bool txflag = 0;
 bool recvd;
-bool enableflag = 0;
+
+#define MAX_SIZE TXLEN
+
+// Structure to represent a queue
+typedef struct {
+    int items[MAX_SIZE];
+    int front;
+    int rear;
+} Queue;
+
+// Function to initialize an empty queue
+void initializeQueue(Queue *queue) {
+    queue->front = -1;
+    queue->rear = -1;
+}
+
+// Function to check if the queue is empty
+int isEmpty(Queue *queue) {
+    return (queue->front == -1 && queue->rear == -1);
+}
+
+// Function to check if the queue is full
+int isFull(Queue *queue) {
+    return (queue->rear == MAX_SIZE - 1);
+}
+
+// Function to enqueue an item
+void enqueue(Queue *queue, int item) {
+    if (isFull(queue)) {
+
+        return;
+    }
+
+    if (isEmpty(queue)) {
+        queue->front = 0;
+        queue->rear = 0;
+    } else {
+        queue->rear++;
+    }
+
+    queue->items[queue->rear] = item;
+}
+
+// Function to dequeue an item
+int dequeue(Queue *queue) {
+    if (isEmpty(queue)) {
+        return -1;
+    }
+
+    int dequeuedItem = queue->items[queue->front];
+
+    if (queue->front == queue->rear) {
+        // Only one element in the queue
+        initializeQueue(queue);
+    } else {
+        queue->front++;
+    }
+
+    return dequeuedItem;
+}
+
+Queue myQueue;
+
 
 void delay_ms(int ms) {
 
@@ -54,18 +112,21 @@ __interrupt void Timer1_A0 (void)
 
 
 void freqhigh(){
-    TA1CCR0 = (CPU_FREQ/(2*240000)) -1;                      // Set compare value for 200 kHz
+    TA1CCR0 = (CPU_FREQ/(2*220000)) -1;                      // Set compare value for 200 kHz
 }
 
 void freqlow(){
-    TA1CCR0 = (CPU_FREQ/(2*200000)) -1;                      // Set compare value for 200 kHz
+    TA1CCR0 = (CPU_FREQ/(2*180000)) -1;                      // Set compare value for 200 kHz
 }
 
 void disable_signal(){
     P1OUT = 0; // Set all P1 pins low
-    __disable_interrupt();
     TA1CTL &= ~(TASSEL_2 | TACLR | MC_1);
     TA1CCTL0 = ~CCIE;
+    __disable_interrupt();
+//    __enable_interrupt();
+//    TA1CTL = TASSEL_2 | TACLR | MC_1 ;  // SMCLK, up mode, /8 divider
+//    TA1CCTL0 = CCIE;                  // Enable CCR0 interrupt
 }
 void msp430_timer_stop(void) {
     P1OUT = 0; // Set all P1 pins low
@@ -85,61 +146,78 @@ void msp430_timer_stop(void) {
     __enable_interrupt();
 }
 
-void callback_function(void) {
-//    P1OUT ^= BIT2;
-    // Perform desired actions here, e.g., toggle an LED, read a sensor, etc.
-    if (tx_counter < TXLEN){
-        xQueueReceiveFromISR(queue,&recvd, NULL);
+//void callback_function(void) {
+////    P1OUT ^= BIT2;
+//    // Perform desired actions here, e.g., toggle an LED, read a sensor, etc.
+//    if (tx_counter < TXLEN){
+////        xQueueReceiveFromISR(queue,&recvd, NULL);
+//        recvd = dequeue(&myQueue);
+//
+//        if (recvd == 0){
+//            TA1CCR0 = (CPU_FREQ/(2*160000)) -1;
+//        }
+//        else if(recvd == 1){
+//            TA1CCR0 = (CPU_FREQ/(2*240000)) -1;
+//        }
+//
+//        tx_counter++;
+//    }
+//    else{
+//        tx_counter = 0;
+//        disable_signal();
+////        xQueueReset(queue);
+//        msp430_timer_stop();
+//    }
+//}
 
-//        printf("%d",recvd);
-        if (recvd == 1){
-            TA1CCR0 = (CPU_FREQ/(2*240000)) -1;
-//            P1OUT ^= BIT2;  // Toggle an LED as an example
-        }
-        else{
-            TA1CCR0 = (CPU_FREQ/(2*200000)) -1;
-//            P1OUT ^= BIT2;  // Toggle an LED as an example
-        }
-        tx_counter++;
-    }
-    else{
-        disable_signal();
-        tx_counter = 0;
-        xQueueReset(queue);
-        msp430_timer_stop();
-    }
-}
-
-void msp430_timer_start_periodic(unsigned int period_us, void (*callback)(void)) {
+void msp430_timer_start_periodic(unsigned int period_us) {
     // Configure Timer_A0 for periodic operation (adjust as needed)
-    TA0CTL = TASSEL_2 | MC_1 | ID_0| TACLR;  // SMCLK, Up mode, no divider
+    __enable_interrupt();  // Re-enable interrupts
+    TA0CTL = TASSEL_2 | MC_1 | ID_0 | TACLR;  // SMCLK, Up mode, no divider
     TA0CCR0 = (CPU_FREQ * period_us) / 1000000 - 1;  // Set period based on SMCLK frequency
     TA0CCTL0 = CCIE;  // Enable interrupts
-//    TA0CTL |= MC_1;   // Start timer
+    TA0CTL |= MC_1;   // Start timer
 
     TA1CTL = TASSEL_2 | TACLR | MC_1 ;  // SMCLK, up mode, /8 divider
     TA1CCTL0 = CCIE;                  // Enable CCR0 interrupt
 
     // Store callback function pointer safely
-    __disable_interrupt();  // Disable interrupts temporarily
-    static void (*callback_function)(void) = NULL;
-    callback_function = callback;
-    __enable_interrupt();  // Re-enable interrupts
+//    __disable_interrupt();  // Disable interrupts temporarily
+//    static void (*callback_function)(void) = NULL;
+//    callback_function = callback;
+//    __enable_interrupt();  // Re-enable interrupts
 }
 
 // Interrupt service routine for Timer_A0 (adjust for other timers)
 __attribute__((interrupt(TIMER0_A0_VECTOR)))
 void timer_a0_isr(void) {
-    if (callback_function) {
-        __disable_interrupt();  // Ensure exclusive access to callback
-        callback_function();    // Call user-defined callback
-        __enable_interrupt();  // Restore interrupts
-    }
+//    P1OUT ^= BIT3;
+
+    if (tx_counter < TXLEN){
+    //        xQueueReceiveFromISR(queue,&recvd, NULL);
+            recvd = dequeue(&myQueue);
+
+            if (recvd == 0){
+                TA1CCR0 = (CPU_FREQ/(2*180000)) -1;
+            }
+            else if(recvd == 1){
+                TA1CCR0 = (CPU_FREQ/(2*220000)) -1;
+            }
+
+            tx_counter++;
+        }
+        else{
+            tx_counter = 0;
+            disable_signal();
+    //        xQueueReset(queue);
+            msp430_timer_stop();
+        }
+
 }
 
 void set_cpu_freq() {
 //#if CPU_FREQ == CPU_FREQ_8MHZ
-    // 8MHz
+////     8MHz
 //    CSCTL0_H = 0xA5;
 //    CSCTL1 = DCOFSEL_6;
 //    CSCTL2 = SELA__VLOCLK | SELS__DCOCLK | SELM__DCOCLK;
@@ -169,13 +247,15 @@ void uint32_to_binary(uint32_t num) {
     int i = 0;
     for (i = 0; i < 16; i++) {
         txbit = MSB & mask;             // Check if the bit is set or not
-        xQueueSend(queue, &txbit, 0);
+//        xQueueSend(queue, &txbit, 0);
+        enqueue(&myQueue, txbit);
         mask >>= 1;                     // Shift the mask to the right for the next bit
     }
     mask = 1u<<15;
     for (i = 0; i < 16; i++) {
         txbit = LSB & mask;
-        xQueueSend(queue, &txbit, 0);
+//        xQueueSend(queue, &txbit, 0);
+        enqueue(&myQueue, txbit);
         mask >>= 1;                     // Shift the mask to the right for the next bit
     }
 
@@ -189,7 +269,8 @@ void uint32_to_binary(uint32_t num) {
 int main_blinky(void) {
     WDTCTL = WDTPW | WDTHOLD;   // Stop watchdog timer
 
-    queue = xQueueCreate(TXLEN, ITEM_SIZE);
+//    queue = xQueueCreate(TXLEN, ITEM_SIZE);
+    initializeQueue(&myQueue);
 
     // Configure GPIO
     P1OUT &= ~BIT2;                 // Clear P1.0 output latch for a defined power-on state
@@ -208,14 +289,13 @@ int main_blinky(void) {
     uint8_t tx_payload_buffer[PAYLOADSIZE];
 
     while (1) {
-        txflag = 0;
         /* generate new data */
         generate_data(tx_payload_buffer, PAYLOADSIZE, true);
         /* add header (10 byte) to packet */
         add_header(&message[0], seq, header_tmplate);
         /* add payload to packet */
         memcpy(&message[HEADER_LEN], tx_payload_buffer, PAYLOADSIZE);
-        xQueueReset(queue);
+//        xQueueReset(queue);
 
         /* casting for 32-bit fifo */
         uint8_t i=0;
@@ -226,8 +306,8 @@ int main_blinky(void) {
 
         seq++;
         tx_counter = 0;
-        msp430_timer_start_periodic(100, callback_function);
-        delay_ms(50);
+        msp430_timer_start_periodic(100);
+        delay_ms(200);
 
     }
 
