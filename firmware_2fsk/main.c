@@ -70,19 +70,19 @@ void timer_a0_isr(void) {
     if (tx_counter < TXLEN){
 
             if (arr_dump[tx_counter] == 0){
-//                TB0CCR0 = (CPU_FREQ/(2*2000000)) -1;
-                  TB0CCR0 = 5;  // 1.33 Mhz
+                TB0CCR0 = (CPU_FREQ/(2*180000)) -1;
+//                  TB0CCR0 = 5;  // 1.33 Mhz
             }
             else if(arr_dump[tx_counter] == 1){
-//                TB0CCR0 = (CPU_FREQ/(2*2000000)) -1;
-                  TB0CCR0 = 4;  // 1.60 Mhz
+                TB0CCR0 = (CPU_FREQ/(2*220000)) -1;
+//                  TB0CCR0 = 4;  // 1.60 Mhz
             }
             tx_counter++;
         }
         else{
             tx_counter = 0;
-            disable_signal();
-            msp430_timer_stop();
+//            disable_signal();
+//            msp430_timer_stop();
         }
 
 }
@@ -100,7 +100,7 @@ void set_cpu_freq() {
 ////        // Clock System Setup
     FRCTL0 = FRCTLPW | NWAITS_1;
      CSCTL0_H = CSKEY >> 8;                    // Unlock CS registers
-     CSCTL1 = DCORSEL | DCOFSEL_4;             // Set DCO to 8MHz
+     CSCTL1 = DCORSEL | DCOFSEL_4;             // Set DCO to 16MHz
      CSCTL2 = SELA__VLOCLK | SELS__DCOCLK | SELM__DCOCLK;
      CSCTL3 = DIVA__1 | DIVS__1 | DIVM__1;     // Set all dividers to 1
 //     CSCTL4 |= LFXTDRIVE_3 | HFXTDRIVE_1 | HFFREQ_1;
@@ -188,7 +188,7 @@ int main(void) {
 
         __enable_interrupt();
         TA0CTL = TASSEL__SMCLK | MC_1 | TACLR;  // SMCLK, Up mode, no divider
-        TA0CCR0 = (16000000/200000) - 1;  // Set period based on SMCLK frequency
+        TA0CCR0 = (16000000/10000) - 1;  // Set period based on SMCLK frequency
         TA0CCTL0 = CCIE;  // Enable interrupts
         TA0CCTL1 = OUTMOD_7;
         TA0CTL |= MC_1;   // Start timer
@@ -196,7 +196,7 @@ int main(void) {
         TB0CTL = TBSSEL__SMCLK | TBCLR | MC_1 ;  // SMCLK, up mode, /8 divider
         TB0CCTL1 = OUTMOD_4;
 
-        delay_us(1);
+        delay_us(10000);
 
     }
     return 0;
